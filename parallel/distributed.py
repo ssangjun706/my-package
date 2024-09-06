@@ -62,25 +62,23 @@ class DistributedDataLoader:
         return len(self.loader)
 
 
-class DistributedParallel(nn.Module):
+class DistributedParallel(DistributedDataParallel):
     def __init__(
         self,
         module: nn.Module,
         device: int,
         find_unused_parameters: bool = False,
     ):
-        super().__init__()
         cuda.set_device(device)
-        module = module.to(device)
-
-        self.distributed = DistributedDataParallel(
+        module.to(device)
+        super().__init__(
             module=module,
             device_ids=[device],
             find_unused_parameters=find_unused_parameters,
         )
 
     def forward(self, *args, **kwargs):
-        return self.distributed(*args, **kwargs)
+        return super().forward(*args, **kwargs)
 
 
 class DistributedTrainer:
@@ -113,6 +111,7 @@ class DistributedTrainer:
             args=(self.world_size,),
         )
 
+
 def suppress_io(func):
     def __wrapper(*args, **kwargs):
         stdout = sys.stdout
@@ -125,6 +124,5 @@ def suppress_io(func):
         finally:
             sys.stdout = stdout
             sys.stderr = stderr
-            
 
     return __wrapper
