@@ -5,8 +5,8 @@ with open("README.md") as fp:
 
 setup(
     name="my_package",
-    version="0.0.1",
-    packages=find_packages(),
+    version="0.0.2",
+    packages=find_packages(include=['parallel', 'parallel.*']),
     install_requires=[
         "torch",
     ],
