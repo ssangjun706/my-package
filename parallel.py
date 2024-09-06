@@ -1,12 +1,15 @@
-from os import environ
+import os
 
-from torch.nn import Module
+import torch.nn as nn
+import torch.cuda as cuda
+import torch.distributed as dist
+import torch.multiprocessing as mp
+
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
-from torch.multiprocessing import spawn
-from torch.distributed import destroy_process_group, init_process_group
-from torch.cuda import device_count, set_device
+
 
 class DistributedDataLoader:
     def __init__(
@@ -24,7 +27,7 @@ class DistributedDataLoader:
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.drop_last = drop_last
-        self.device_count = device_count()
+        self.device_count = cuda.device_count()
 
         assert (
             self.batch_size % self.device_count == 0
@@ -57,15 +60,15 @@ class DistributedDataLoader:
         return len(self.loader)
 
 
-class DistributedParallel(Module):
+class DistributedParallel(nn.Module):
     def __init__(
         self,
-        module: Module,
+        module: nn.Module,
         device: int,
         find_unused_parameters: bool = True,
     ):
         super().__init__()
-        set_device(device)
+        cuda.set_device(device)
         module = module.to(device)
 
         self.distributed = DistributedDataParallel(
@@ -80,14 +83,14 @@ class DistributedParallel(Module):
 
 class DistributedTrainer:
     def __init__(self, func, addr="localhost", port="8888", backend="nccl"):
-        environ["MASTER_ADDR"] = addr
-        environ["MASTER_PORT"] = port
-        self.world_size = device_count()
+        os.environ["MASTER_ADDR"] = addr
+        os.environ["MASTER_PORT"] = port
+        self.world_size = cuda.device_count()
         self.backend = backend
         self.func = func
 
     def worker(self, rank, ngpus_per_node):
-        init_process_group(
+        dist.init_process_group(
             backend=self.backend,
             init_method="env://",
             world_size=ngpus_per_node,
@@ -95,11 +98,11 @@ class DistributedTrainer:
         )
 
         result = self.func(rank)
-        destroy_process_group()
+        dist.destroy_process_group()
         return result
 
     def __call__(self):
-        spawn(
+        mp.spawn(
             self.worker,
             nprocs=self.world_size,
             args=(self.world_size,),
