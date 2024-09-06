@@ -7,8 +7,9 @@ pip install git+https://github.com/ssangjun706/my_package.git
 ```
 
 ## Module `parallel`
+This is designed to simplify distributed training workflows in PyTorch. It was created primarily for personal use to avoid the repetitive boilerplate code associated with DistributedDataParallel. This package has no additional features beyond the basic functionality.
 
-### Classes
+### Features
 
 - `DistributedDataLoader`
 - `DistributedParallel`
@@ -40,8 +41,7 @@ def train(rank):
     loader = DistributedDataLoader(dataset, batch_size)
 
     # Iterate over the data loader for training
-    # Disable progress bar for all devices except the main one (rank 0)
-    for X, y in tqdm(loader, disable=device!=0):
+    for batch in tqdm(loader):
         # Training logic here...
         pass
 
@@ -55,4 +55,21 @@ if __name__ == "__main__":
     # Start the distributed training process
     trainer()
 
+```
+
+### Integrating with Logging Libraries
+To avoid logging duplication, make sure to initialize and log only in the process with rank 0:
+```python
+import wandb
+
+def train(rank):
+    # Initialize wandb only for rank 0
+    if rank == 0:
+        wandb.init(project='my_package')
+    
+    # Your training code here...
+    
+    # Log metrics only for rank 0
+    if rank == 0:
+        wandb.log({"loss": loss})
 ```

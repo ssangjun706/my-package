@@ -1,4 +1,6 @@
 import os
+import io
+import sys
 
 import torch.nn as nn
 import torch.cuda as cuda
@@ -65,7 +67,7 @@ class DistributedParallel(nn.Module):
         self,
         module: nn.Module,
         device: int,
-        find_unused_parameters: bool = True,
+        find_unused_parameters: bool = False,
     ):
         super().__init__()
         cuda.set_device(device)
@@ -97,6 +99,9 @@ class DistributedTrainer:
             rank=rank,
         )
 
+        if rank != 0:
+            self.func = suppress_io(self.func)
+
         result = self.func(rank)
         dist.destroy_process_group()
         return result
@@ -107,3 +112,19 @@ class DistributedTrainer:
             nprocs=self.world_size,
             args=(self.world_size,),
         )
+
+def suppress_io(func):
+    def __wrapper(*args, **kwargs):
+        stdout = sys.stdout
+        stderr = sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+
+        try:
+            return func(*args, **kwargs)
+        finally:
+            sys.stdout = stdout
+            sys.stderr = stderr
+            
+
+    return __wrapper
