@@ -18,9 +18,9 @@ class DistributedDataLoader:
         self,
         dataset: Dataset,
         batch_size: int,
-        shuffle: bool = False,
         num_workers: int = 0,
-        pin_memory: bool = False,
+        shuffle: bool = False,
+        pin_memory: bool = True,
         drop_last: bool = False,
     ):
         self.dataset = dataset
@@ -36,16 +36,12 @@ class DistributedDataLoader:
         ), f"(batch size) % (device count) != 0"
         self.batch_size //= self.device_count
 
-        assert (
-            self.num_workers % self.device_count == 0
-        ), f"(num workers) % (device count) != 0"
-        self.num_workers //= self.device_count
-
         self.sampler = DistributedSampler(
-            dataset,
+            dataset=dataset,
             shuffle=shuffle,
             drop_last=drop_last,
         )
+
         self.loader = DataLoader(
             dataset=self.dataset,
             batch_size=self.batch_size,
