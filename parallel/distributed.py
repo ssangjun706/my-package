@@ -1,6 +1,8 @@
 import os
 import io
 import sys
+import getpass
+from setproctitle import *
 
 import torch.nn as nn
 import torch.cuda as cuda
@@ -65,6 +67,7 @@ class DistributedParallel(DistributedDataParallel):
         device: int,
         find_unused_parameters: bool = False,
     ):
+        setproctitle(f"{getpass.getuser()}/python/parallel/worker")
         cuda.set_device(device)
         module.to(device)
         super().__init__(
@@ -86,36 +89,40 @@ class DistributedTrainer:
         self.func = func
 
     def worker(self, rank, ngpus_per_node):
-        dist.init_process_group(
-            backend=self.backend,
-            init_method="env://",
-            world_size=ngpus_per_node,
-            rank=rank,
-        )
+        try:
+            dist.init_process_group(
+                backend=self.backend,
+                init_method="env://",
+                world_size=ngpus_per_node,
+                rank=rank,
+            )
 
-        if rank != 0:
-            self.func = suppress_io(self.func)
+            if rank != 0:
+                self.func = suppress_io(self.func)
 
-        result = self.func(rank)
-        dist.destroy_process_group()
-        return result
+            result = self.func(rank)
+            return result
+        finally:
+            dist.destroy_process_group()
 
     def __call__(self):
-        mp.spawn(
-            self.worker,
-            nprocs=self.world_size,
-            args=(self.world_size,),
-        )
+        try:
+            mp.spawn(
+                self.worker,
+                nprocs=self.world_size,
+                args=(self.world_size,),
+            )
+        finally:
+            print("All processes have finished.")
 
 
 def suppress_io(func):
     def __wrapper(*args, **kwargs):
-        stdout = sys.stdout
-        stderr = sys.stderr
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
-
         try:
+            stdout = sys.stdout
+            stderr = sys.stderr
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
             return func(*args, **kwargs)
         finally:
             sys.stdout = stdout
