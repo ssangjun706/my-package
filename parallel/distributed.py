@@ -1,18 +1,34 @@
 import os
-import io
 import sys
 import getpass
 from setproctitle import *
+from multiprocessing import get_context
 
 import torch.nn as nn
 import torch.cuda as cuda
 import torch.distributed as dist
-import torch.multiprocessing as mp
 
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
+
+from typing import Callable, Generator
+
+from contextlib import contextmanager
+
+@contextmanager
+def suppress_output():
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 
 class DistributedDataLoader:
@@ -39,9 +55,9 @@ class DistributedDataLoader:
         self.batch_size //= self.device_count
 
         self.sampler = DistributedSampler(
-            dataset=dataset,
-            shuffle=shuffle,
-            drop_last=drop_last,
+            dataset=self.dataset,
+            shuffle=self.shuffle,
+            drop_last=self.drop_last,
         )
 
         self.loader = DataLoader(
@@ -51,6 +67,7 @@ class DistributedDataLoader:
             pin_memory=self.pin_memory,
             sampler=self.sampler,
             shuffle=False,
+            drop_last=False,
         )
 
     def __iter__(self):
@@ -81,14 +98,30 @@ class DistributedParallel(DistributedDataParallel):
 
 
 class DistributedTrainer:
-    def __init__(self, func, addr="localhost", port="8888", backend="nccl"):
+    def __init__(self, 
+        func: Callable, 
+        addr: str = "localhost", 
+        port: str = "8888", 
+        backend: str = "nccl", 
+        gather: bool = False,
+    ):
         os.environ["MASTER_ADDR"] = addr
         os.environ["MASTER_PORT"] = port
-        self.world_size = cuda.device_count()
         self.backend = backend
         self.func = func
+        self.world_size = cuda.device_count()
+        self.gather = gather
 
-    def worker(self, rank, ngpus_per_node):
+    def worker(self, ngpus_per_node: int, rank: int, queue, use_yield: bool):
+        def runner():
+            if use_yield:
+                for item in self.func(rank):
+                    queue.put(item)
+                    dist.barrier()
+            else:
+                result = self.func(rank)
+                queue.put(result)
+
         try:
             dist.init_process_group(
                 backend=self.backend,
@@ -96,36 +129,80 @@ class DistributedTrainer:
                 world_size=ngpus_per_node,
                 rank=rank,
             )
-
-            if rank != 0:
-                self.func = suppress_io(self.func)
-
-            result = self.func(rank)
-            return result
+            if rank == 0:
+                runner()
+            else:
+                with suppress_output():
+                    runner()
         finally:
             dist.destroy_process_group()
+            queue.put(None)
 
-    def __call__(self):
+
+    def __iter__(self) -> Generator:
+        context = get_context("spawn")
+        queue = context.Queue()
+        processes = []
+        buffer = []
+        terminate_counter = 0
         try:
-            mp.spawn(
-                self.worker,
-                nprocs=self.world_size,
-                args=(self.world_size,),
-            )
+            for rank in range(self.world_size):
+                p = context.Process(
+                    target=self.worker, 
+                    args=(self.world_size, rank, queue, True)
+                )
+                p.start()
+                processes.append(p)
+
+            while terminate_counter < self.world_size:
+                output = queue.get()
+                if output is None:
+                    terminate_counter += 1
+                    continue
+                if self.gather:
+                    buffer.append(output)
+                    if len(buffer) == self.world_size:
+                        buffer = tuple(
+                            sum(values) / len(values) for values in zip(*buffer)
+                                    )
+                        yield buffer
+                        buffer = []
+                else:
+                    yield output
         finally:
+            for p in processes:
+                p.join()
+            print("All processes have finished.")
+
+    
+    def __call__(self) -> list:
+        context = get_context("spawn")
+        queue = context.Queue()
+        processes = []
+        buffer = []
+        terminate_counter = 0
+        try:
+            for rank in range(self.world_size):
+                p = context.Process(
+                    target=self.worker, 
+                    args=(self.world_size, rank, queue, False)
+                )
+                p.start()
+                processes.append(p)
+
+            while terminate_counter < self.world_size:
+                output = queue.get()
+                if output is None:
+                    terminate_counter += 1
+                    continue
+                buffer.append(output)
+
+            if self.gather:
+                buffer = tuple(sum(values) / len(values) for values in zip(*buffer))
+            return buffer
+        finally:
+            for p in processes:
+                p.join()
             print("All processes have finished.")
 
 
-def suppress_io(func):
-    def __wrapper(*args, **kwargs):
-        try:
-            stdout = sys.stdout
-            stderr = sys.stderr
-            sys.stdout = io.StringIO()
-            sys.stderr = io.StringIO()
-            return func(*args, **kwargs)
-        finally:
-            sys.stdout = stdout
-            sys.stderr = stderr
-
-    return __wrapper
