@@ -1,4 +1,4 @@
-from .distributed import DistributedTrainer
+from .distributed import DistributedDataLoader, DistributedParallel, DistributedTrainer
 
 
-__all__ = ["DistributedTrainer"]
+__all__ = ["DistributedDataLoader", "DistributedParallel", "DistributedTrainer"]
