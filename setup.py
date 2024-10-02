@@ -5,12 +5,12 @@ with open("README.md") as fp:
 
 setup(
     name="my_package",
-    version="0.2.1",
+    version="0.3.0",
     packages=find_packages(include=["parallel", "parallel.*"]),
     install_requires=[
         "torch",
     ],
-    python_requires=">=3.11",
+    python_requires=">=3.9",
     long_description=long_desc,
     long_description_content_type="text/markdown",
     url="https://github.com/ssangjun706/my_package",
