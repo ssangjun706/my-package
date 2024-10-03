@@ -100,14 +100,15 @@ class DistributedParallel(DistributedDataParallel):
 class DistributedTrainer:
     def __init__(self, 
         func: Callable, 
-        addr: str = "localhost", 
-        port: str = "8888", 
+        port: int = 8888, 
         backend: str = "nccl", 
+        device_ids: list[int] = None,
         gather: bool = False,
     ):
-        os.environ["MASTER_ADDR"] = addr
-        os.environ["MASTER_PORT"] = port
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, device_ids))
         self.backend = backend
+        self.port = port
         self.func = func
         self.world_size = cuda.device_count()
         self.gather = gather
@@ -125,7 +126,7 @@ class DistributedTrainer:
         try:
             dist.init_process_group(
                 backend=self.backend,
-                init_method="env://",
+                init_method=f"tcp://localhost:{self.port}",
                 world_size=ngpus_per_node,
                 rank=rank,
             )
@@ -204,5 +205,3 @@ class DistributedTrainer:
             for p in processes:
                 p.join()
             print("All processes have finished.")
-
-
