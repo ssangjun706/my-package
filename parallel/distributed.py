@@ -87,55 +87,61 @@ class Arguments:
 class DistributedTrainer:
     def __init__(
         self,
-        func: Callable,
-        model: nn.Module,
-        train_loader: DataLoader,
-        test_loader: DataLoader,
+        trainer: Callable,
+        module: nn.Module,
+        device_ids: list[int],
         epoch: int = 1,
         port: int = 8888,
+        train_loader: DataLoader | None = None,
+        test_loader: DataLoader | None = None,
     ):
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, device_ids))
+        self.world_size = cuda.device_count()
         self.port = port
-        self.func = func
+
+        self.trainer = trainer
         self.epoch = epoch
-        self.model = model
+        self.module = module
         self.train_loader = train_loader
         self.test_loader = test_loader
-        self.world_size = cuda.device_count()
-        self._context = get_context("spawn")
-        self._queue = self._context.Queue()
         assert not socket_in_use(port), f"Port {port} is already in use."
 
-    def _runner(self, rank: int):
+    def _runner(self, rank: int, queue):
         setproctitle(f"{getpass.getuser()}/python/parallel/worker")
         torch.cuda.set_device(rank)
+
         stream = torch.cuda.Stream()
         with torch.cuda.stream(stream):
-            model = self.model.to(rank, non_blocking=True)
-        
+            self.module.to(rank, non_blocking=True)
+
+        model = DistributedDataParallel(self.module)
         torch.cuda.current_stream().wait_stream(stream)
-        model = DistributedDataParallel(model, device_ids=[rank])
     
-        train_loader = DistributedDataLoader(self.train_loader, rank)
-        test_loader = DistributedDataLoader(self.test_loader, rank)
-        
-        train_loader = PrefetchLoader(train_loader)
-        test_loader = PrefetchLoader(test_loader)
+        if self.train_loader is not None:
+            self.train_loader = DistributedDataLoader(self.train_loader, rank)
+            self.train_loader = PrefetchLoader(self.train_loader)
+
+        if self.test_loader is not None:
+            self.test_loader = DistributedDataLoader(self.test_loader, rank)
+            self.test_loader = PrefetchLoader(self.test_loader)
         
         args = Arguments(
             rank=rank,
             model=model,
-            train_loader=train_loader,
-            test_loader=test_loader,
+            train_loader=self.train_loader,
+            test_loader=self.test_loader,
         )
         for epoch in range(1, self.epoch + 1):
             args.set(epoch=epoch)
             model.train()
             if rank == 0:
-                output = self.func(args)
+                output = self.trainer(args)
             else:
                 with suppress_output():
-                    output = self.func(args)
+                    output = self.trainer(args)
 
+            output = list(output)
             if isinstance(output, torch.Tensor):
                 if output.is_cuda:
                     output = (float(output.detach().cpu()),)
@@ -150,10 +156,10 @@ class DistributedTrainer:
                 )
 
             if output is not None:
-                self._queue.put(output)
+                queue.put(output)
             dist.barrier()
 
-    def _worker(self, ngpus_per_node: int, rank: int):
+    def _worker(self, ngpus_per_node: int, rank: int, queue):
         try:
             dist.init_process_group(
                 backend="nccl",
@@ -161,25 +167,27 @@ class DistributedTrainer:
                 world_size=ngpus_per_node,
                 rank=rank,
             )
-            self._runner(rank)
+            self._runner(rank, queue)
         finally:
             dist.destroy_process_group()
-            self._queue.put(None)
+            queue.put(None)
 
     def __iter__(self):
+        context = get_context("spawn")
+        queue = context.Queue()
         processes, buffer = [], []
         terminate_counter = 0
         try:
             for rank in range(self.world_size):
-                p = self._context.Process(
+                p = context.Process(
                     target=self._worker,
-                    args=(self.world_size, rank),
+                    args=(self.world_size, rank, queue),
                 )
                 p.start()
                 processes.append(p)
 
             while terminate_counter < self.world_size:
-                output = self._queue.get()
+                output = queue.get()
                 if output is None:
                     terminate_counter += 1
                     continue
@@ -199,19 +207,21 @@ class DistributedTrainer:
             print("All processes have finished.")
 
     def __call__(self):
+        context = get_context("spawn")
+        queue = context.Queue()
         processes = []
         terminate_counter = 0
         try:
             for rank in range(self.world_size):
-                p = self._context.Process(
+                p = context.Process(
                     target=self._worker,
-                    args=(self.world_size, rank),
+                    args=(self.world_size, rank, queue),
                 )
                 p.start()
                 processes.append(p)
 
             while terminate_counter < self.world_size:
-                output = self._queue.get()
+                output = queue.get()
                 if output is None:
                     terminate_counter += 1
                     continue
@@ -237,7 +247,13 @@ def socket_in_use(port: int):
 
 
 def default_collator_fn(x: list):
-    return tuple(sum(e) / len(e) for e in zip(*x))
+    result = tuple(sum(e) / len(e) for e in zip(*x))
+    
+    # 결과가 단일 값인 경우 튜플에서 해당 값을 추출
+    if len(result) == 1:
+        return result[0]
+    
+    return result
 
 
 class PrefetchLoader:
