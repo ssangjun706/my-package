@@ -2,24 +2,15 @@
 To install the package directly from the GitHub repository, use the following command:
 
 ```bash
-pip install git+https://github.com/ssangjun706/my_package.git
+pip install git+https://github.com/ssangjun706/my-package.git
 ```
 
 ## Upgrade
 To update the package to the latest version:
 
 ```bash
-pip install --upgrade git+https://github.com/ssangjun706/my_package.git
+pip install --upgrade git+https://github.com/ssangjun706/my-package.git
 ```
-
-## Module: `parallel`
-It offers simplified PyTorch distributed training. It focuses on making distributed workflows more accessible and removing unnecessary boilerplate. As primarily intended for personal use, it does not provide any additional features beyond the core functionality.
-
-### Features
-
-- **`DistributedDataLoader`**: A data loader that manages data distribution across multiple processes.
-- **`DistributedParallel`**: A wrapper for PyTorch models to enable easy parallelization across devices.
-- **`DistributedTrainer`**: A training framework that supports both return and yield values during distributed training.
 
 ### Usage Example
 
@@ -71,7 +62,4 @@ if __name__ == "__main__":
         # Handle the yielded values here
         pass
 ```
-
-### Update Notes
-- **Separation of Return and Yield Values**: The `DistributedTrainer` class supports both return and yield methods for handling values during the training process. This allows you to either collect final results or continuously monitor metrics during training.
 ---
